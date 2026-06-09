@@ -1,17 +1,21 @@
 import { GoogleGenAI } from "@google/genai";
 
-const ai = new GoogleGenAI({
-    apiKey: process.env.CUSTOM_API_KEY || process.env.GEMINI_API_KEY,
-});
-
 export default async function handler(req, res) {
     if (req.method !== "POST") {
         return res.status(405).json({ error: "Method not allowed" });
     }
 
-    const { prompt, image } = req.body;
-
     try {
+        const { prompt, image } = req.body;
+
+        if (!prompt && !image) {
+            return res.status(400).json({ error: "Prompt or image is required" });
+        }
+
+        const ai = new GoogleGenAI({
+            apiKey: process.env.CUSTOM_API_KEY || process.env.GEMINI_API_KEY,
+        });
+
         const parts = [];
 
         if (prompt) parts.push({ text: prompt });
@@ -30,10 +34,11 @@ export default async function handler(req, res) {
             contents: { parts },
         });
 
-        return res.status(200).json({
+        res.status(200).json({
             text: response.text || "",
         });
     } catch (err) {
-        return res.status(500).json({ error: "AI error" });
+        console.error(err);
+        res.status(500).json({ error: "Internal server error" });
     }
 }
