@@ -7,4 +7,4 @@ export interface Note {
   category?: 'Personal' | 'Work' | 'Project' | 'None';
 }
 
-export type ViewState = 'landing' | 'app';
+export type ViewState = 'landing' | 'signup' | 'app';

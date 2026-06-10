@@ -12,20 +12,11 @@ import { clsx, type ClassValue } from 'clsx';
 import { twMerge } from 'tailwind-merge';
 import { isToday, isYesterday } from 'date-fns';
 import { Note } from '../types';
+import { HexagonLogo } from './Logo';
 
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
-
-const HexagonLogo = ({ className }: { className?: string }) => (
-  <svg viewBox="0 0 24 24" className={className} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
-    <path d="M11 21 L11 14 L6 11" />
-    <path d="M4 7 L9 10 L13 8" />
-    <path d="M20 7 L15 10 L15 16" />
-    <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
-  </svg>
-);
 
 export function NotesHubApp() {
   const [notes, setNotes] = useState<Note[]>([]);
@@ -43,23 +34,79 @@ export function NotesHubApp() {
   const [isDictating, setIsDictating] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const [isWebSearchEnabled, setIsWebSearchEnabled] = useState(false);
   const [editContent, setEditContent] = useState('');
   const [attachedImage, setAttachedImage] = useState<{ data: string, mimeType: string, previewUrl: string } | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const promptInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const normalizeImageFile = (file: File) => {
+    return new Promise<{ data: string, mimeType: string, previewUrl: string }>((resolve, reject) => {
+      if (!file.type.startsWith('image/')) {
+        reject(new Error('Please upload an image file.'));
+        return;
+      }
+
+      if (file.type === 'image/svg+xml') {
+        reject(new Error('SVG files are not supported for AI image analysis. Please upload PNG, JPG, or WEBP.'));
+        return;
+      }
+
+      const reader = new FileReader();
+
+      reader.onload = () => {
+        const sourceUrl = reader.result as string;
+        const image = new Image();
+
+        image.onload = () => {
+          const maxSide = 1280;
+          const scale = Math.min(1, maxSide / Math.max(image.width, image.height));
+          const width = Math.max(1, Math.round(image.width * scale));
+          const height = Math.max(1, Math.round(image.height * scale));
+          const canvas = document.createElement('canvas');
+          const context = canvas.getContext('2d');
+
+          if (!context) {
+            reject(new Error('Could not prepare this image for AI analysis.'));
+            return;
+          }
+
+          canvas.width = width;
+          canvas.height = height;
+          context.drawImage(image, 0, 0, width, height);
+
+          const normalizedUrl = canvas.toDataURL('image/jpeg', 0.9);
+          const [, base64] = normalizedUrl.split(',');
+          resolve({ data: base64, mimeType: 'image/jpeg', previewUrl: normalizedUrl });
+        };
+
+        image.onerror = () => {
+          reject(new Error('This image could not be read. Please try a PNG or JPG file.'));
+        };
+
+        image.src = sourceUrl;
+      };
+
+      reader.onerror = () => {
+        reject(new Error('Could not read this image file.'));
+      };
+
+      reader.readAsDataURL(file);
+    });
+  };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target?.result as string;
-      const [prefix, base64] = dataUrl.split(',');
-      const mimeType = prefix.split(':')[1].split(';')[0];
-      setAttachedImage({ data: base64, mimeType, previewUrl: dataUrl });
-    };
-    reader.readAsDataURL(file);
+    normalizeImageFile(file)
+      .then(setAttachedImage)
+      .catch((error) => {
+        console.error(error);
+        alert(error instanceof Error ? error.message : 'Could not prepare this image for AI analysis.');
+      });
+
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
@@ -115,16 +162,18 @@ export function NotesHubApp() {
   const handleGenerate = async (queryOverride?: string) => {
     const query = queryOverride || inputValue;
     if ((!query.trim() && !attachedImage) || isGenerating) return;
+    if (isWebSearchEnabled && !query.trim()) return;
 
     setInputValue('');
     const currentImage = attachedImage;
+    const useWebSearch = isWebSearchEnabled;
     setAttachedImage(null);
     setIsGenerating(true);
     setIsEditing(false);
 
     const loadingNote: Note = {
       id: Date.now().toString(),
-      query: query,
+      query: useWebSearch ? `Search: ${query}` : query,
       content: '', // Empty initially
       createdAt: new Date(),
     };
@@ -138,11 +187,17 @@ export function NotesHubApp() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           prompt: query,
-          image: currentImage ? { data: currentImage.data, mimeType: currentImage.mimeType } : undefined 
+          image: currentImage ? { data: currentImage.data, mimeType: currentImage.mimeType } : undefined,
+          useWebSearch
         }),
       });
 
-      const data = await response.json();
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data.error || `Request failed with status ${response.status}`);
+      }
+
       const content = data.text || 'Error: No content returned.';
 
       const newNote: Note = {
@@ -156,7 +211,9 @@ export function NotesHubApp() {
       console.error(error);
       const errorNote: Note = {
         ...loadingNote,
-        content: 'Sorry, I encountered an error. Please try again.',
+        content: error instanceof Error
+          ? `Sorry, I encountered an error: ${error.message}`
+          : 'Sorry, I encountered an error. Please try again.',
       };
       setActiveNote(errorNote);
     } finally {
@@ -654,6 +711,7 @@ export function NotesHubApp() {
                         </div>
                       )}
                      <textarea
+                       ref={promptInputRef}
                        value={inputValue}
                        onChange={(e) => setInputValue(e.target.value)}
                        onKeyDown={(e) => {
@@ -683,10 +741,19 @@ export function NotesHubApp() {
                            <ImageIcon className="w-4 h-4 text-slate-500" />
                            <span>Upload</span>
                          </button>
-                         <button className="flex items-center space-x-1.5 text-slate-600 hover:text-slate-900 text-[13px] font-semibold transition-colors">
-                           <Globe className="w-4 h-4 text-slate-500" />
-                           <span>Search</span>
-                         </button>
+                        <button
+                          onClick={() => {
+                            setIsWebSearchEnabled((current) => !current);
+                            promptInputRef.current?.focus();
+                          }}
+                          className={cn(
+                            "flex items-center space-x-1.5 text-[13px] font-semibold transition-colors rounded-lg px-2 py-1",
+                            isWebSearchEnabled ? "bg-sky-50 text-sky-700" : "text-slate-600 hover:text-slate-900"
+                          )}
+                        >
+                          <Globe className={cn("w-4 h-4", isWebSearchEnabled ? "text-sky-600" : "text-slate-500")} />
+                          <span>{isWebSearchEnabled ? 'Search on' : 'Search'}</span>
+                        </button>
                        </div>
                        <div className="flex items-center space-x-2">
                          <button 
