@@ -1,4 +1,8 @@
-import { GoogleGenAI } from "@google/genai";
+import Groq from "groq-sdk";
+
+const groq = new Groq({
+    apiKey: process.env.GROQ_API_KEY,
+});
 
 export default async function handler(req, res) {
     if (req.method !== "POST") {
@@ -6,39 +10,31 @@ export default async function handler(req, res) {
     }
 
     try {
-        const { prompt, image } = req.body;
+        const { prompt } = req.body;
 
-        if (!prompt && !image) {
-            return res.status(400).json({ error: "Prompt or image is required" });
-        }
-
-        const ai = new GoogleGenAI({
-            apiKey: process.env.CUSTOM_API_KEY || process.env.GEMINI_API_KEY,
-        });
-
-        const parts = [];
-
-        if (prompt) parts.push({ text: prompt });
-
-        if (image?.data && image?.mimeType) {
-            parts.push({
-                inlineData: {
-                    data: image.data,
-                    mimeType: image.mimeType,
+        const response = await groq.chat.completions.create({
+            model: "llama-3.3-70b-versatile",
+            messages: [
+                {
+                    role: "system",
+                    content:
+                        "You are a highly structured note generator. Output clean markdown with selective bold keywords."
                 },
-            });
-        }
-
-        const response = await ai.models.generateContent({
-            model: "gemini-3.5-flash",
-            contents: { parts },
+                {
+                    role: "user",
+                    content: prompt
+                }
+            ]
         });
 
         res.status(200).json({
-            text: response.text || "",
+            text: response.choices[0]?.message?.content || ""
         });
+
     } catch (err) {
         console.error(err);
-        res.status(500).json({ error: "Internal server error" });
+        res.status(500).json({
+            error: "Internal server error"
+        });
     }
 }
