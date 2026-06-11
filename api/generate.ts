@@ -1,41 +1,30 @@
 import Groq from "groq-sdk";
 
-async function searchGoogle(query) {
-    if (!process.env.GOOGLE_SEARCH_API_KEY || !process.env.GOOGLE_SEARCH_ENGINE_ID) {
-        throw new Error("Missing Google Search setup. Add GOOGLE_SEARCH_API_KEY and GOOGLE_SEARCH_ENGINE_ID to .env.");
-    }
+async function searchWeb(query) {
+    const response = await fetch("https://google.serper.dev/search", {
+        method: "POST",
+        headers: {
+            "X-API-KEY": process.env.SERPER_API_KEY,
+            "Content-Type": "application/json"
+        },
+        body: JSON.stringify({
+            q: query
+        })
+    });
 
-    const searchUrl = new URL("https://www.googleapis.com/customsearch/v1");
-    searchUrl.searchParams.set("key", process.env.GOOGLE_SEARCH_API_KEY);
-    searchUrl.searchParams.set("cx", process.env.GOOGLE_SEARCH_ENGINE_ID);
-    searchUrl.searchParams.set("q", query);
-    searchUrl.searchParams.set("num", "5");
+    const data = await response.json();
 
-    const response = await fetch(searchUrl);
-    const data = await response.json().catch(() => ({}));
-
-    if (!response.ok) {
-        const message = data?.error?.message || `Google Search failed with status ${response.status}`;
-        const setupHint = message.includes("does not have the access to Custom Search JSON API")
-            ? "Enable Custom Search JSON API in the same Google Cloud project as GOOGLE_SEARCH_API_KEY, then restart the dev server."
-            : message.includes("API key not valid")
-                ? "Check GOOGLE_SEARCH_API_KEY in .env, then restart the dev server."
-                : message.includes("Request contains an invalid argument")
-                    ? "Check GOOGLE_SEARCH_ENGINE_ID in .env. It must be the Programmable Search Engine ID, also called cx."
-                    : null;
-
-        const error = new Error(setupHint ? `${message} ${setupHint}` : message) as Error & { status?: number };
-        error.status = response.status;
-        throw error;
-    }
-
-    return (data.items || []).map((item, index) => ({
+    return (data.organic || []).slice(0, 5).map((item, index) => ({
         id: index + 1,
         title: item.title,
         link: item.link,
         snippet: item.snippet
     }));
 }
+
+
+
+
 
 export default async function handler(req, res) {
     if (req.method !== "POST") {
@@ -64,12 +53,35 @@ export default async function handler(req, res) {
             apiKey: process.env.GROQ_API_KEY,
         });
 
-        const sources = shouldSearch ? await searchGoogle(prompt) : [];
+        const sources = shouldSearch ? await searchWeb(prompt) : [];
         const sourceContext = sources.map((source) => (
             `[${source.id}] ${source.title}\nURL: ${source.link}\nSnippet: ${source.snippet}`
         )).join("\n\n");
         const textPrompt = shouldSearch
-            ? `Answer this question using the Google search results below. Include inline source numbers like [1] where useful, then add a "Sources" section with markdown links.\n\nQuestion: ${prompt}\n\nGoogle search results:\n${sourceContext || "No search results found."}`
+            ? `Using the web search results below, create a well-formatted markdown response.
+
+Format:
+
+# Title
+
+## Summary
+Brief summary.
+
+## Key Points
+- Point 1
+- Point 2
+- Point 3
+
+## Detailed Explanation
+Explain clearly with headings and bullet points.
+
+## Sources
+Include source numbers [1], [2], etc.
+
+Question: ${prompt}
+
+Search Results:
+${sourceContext || "No search results found."}`
             : prompt;
 
         const response = await groq.chat.completions.create({
@@ -77,8 +89,26 @@ export default async function handler(req, res) {
             messages: [
                 {
                     role: "system",
-                    content:
-                        "You are Note Hub, a highly structured note generator. Analyze text, attached images, and provided search results carefully. Output clean markdown with selective bold keywords, concise summaries, key observations, and action items when useful. When search results are provided, cite them with source numbers and include source links."
+                    content: `
+You are Note Hub AI.
+
+Always generate clean markdown.
+
+Use:
+# Main Title
+## Headings
+### Subheadings
+- Bullet points
+**Bold important keywords**
+
+For web search responses:
+1. Give a summary.
+2. Give key points.
+3. Give detailed explanation.
+4. End with sources.
+
+Make responses visually organized and easy to read.
+`
                 },
                 {
                     role: "user",
